@@ -1,0 +1,1 @@
+{"name":"reispetos-os","private":true,"version":"1.0.0","type":"module","scripts":{"dev":"vite","build":"vite build"},"dependencies":{"@vitejs/plugin-react":"^4.4.1","vite":"^6.1.0","typescript":"^5.7.3","react":"^19.0.0","react-dom":"^19.0.0"},"devDependencies":{}}
