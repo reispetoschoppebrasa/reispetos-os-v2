@@ -1,12 +1,16 @@
-# REI'SPETOS OS v2.3 — Financeiro Pro
+# REI'SPETOS OS v2.4 — Estoque Completo Pro
 
-- contas a pagar e receber;
-- fornecedores, categorias e vencimentos;
-- contas vencidas;
-- saldo realizado e projetado;
-- recorrência semanal, mensal e anual;
-- despesas pagas por categoria;
-- auditoria dos lançamentos.
+## Recursos
+- painel avançado de estoque;
+- alertas de estoque crítico, zerado e excesso;
+- fornecedores;
+- pedidos de compra;
+- recebimento de mercadoria;
+- atualização automática de estoque e custo;
+- histórico completo de movimentações;
+- inventário físico;
+- exportação CSV;
+- valor total em estoque.
 
 ## Arquivos
 - backend/app/models.py

@@ -116,3 +116,36 @@ class FinancialEntry(Base):
     notes=Column(Text,default="")
     created_at=Column(DateTime(timezone=True),server_default=func.now())
     paid_at=Column(DateTime(timezone=True),nullable=True)
+
+
+class StockSupplier(Base):
+    __tablename__="stock_suppliers"
+    id=Column(Integer,primary_key=True)
+    name=Column(String(140),nullable=False)
+    contact=Column(String(100),default="")
+    phone=Column(String(40),default="")
+    notes=Column(Text,default="")
+    active=Column(Boolean,default=True)
+    created_at=Column(DateTime(timezone=True),server_default=func.now())
+
+class PurchaseOrder(Base):
+    __tablename__="purchase_orders"
+    id=Column(Integer,primary_key=True)
+    supplier_id=Column(Integer,ForeignKey("stock_suppliers.id"),nullable=True)
+    supplier_name=Column(String(140),default="")
+    status=Column(String(30),default="draft")
+    expected_date=Column(String(20),default="")
+    notes=Column(Text,default="")
+    total=Column(Float,default=0)
+    created_at=Column(DateTime(timezone=True),server_default=func.now())
+    received_at=Column(DateTime(timezone=True),nullable=True)
+
+class PurchaseOrderItem(Base):
+    __tablename__="purchase_order_items"
+    id=Column(Integer,primary_key=True)
+    purchase_order_id=Column(Integer,ForeignKey("purchase_orders.id"))
+    product_id=Column(Integer,ForeignKey("products.id"))
+    product_name=Column(String(140),default="")
+    qty=Column(Float,default=0)
+    unit_cost=Column(Float,default=0)
+    received_qty=Column(Float,default=0)

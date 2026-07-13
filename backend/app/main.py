@@ -10,7 +10,7 @@ from .database import Base,engine,get_db,SessionLocal
 from .models import *
 from .security import hash_password,verify_password,create_token,current_user
 
-app=FastAPI(title="REI'SPETOS OS API",version="2.3.0")
+app=FastAPI(title="REI'SPETOS OS API",version="2.4.0")
 front=os.getenv("FRONTEND_URL","*")
 app.add_middleware(CORSMiddleware,allow_origins=["*"] if front=="*" else [front],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
@@ -50,6 +50,27 @@ class CustomerIn(BaseModel): name:str;phone:str
 class CustomerUpdate(BaseModel): name:Optional[str]=None;phone:Optional[str]=None
 class CustomerPointsIn(BaseModel): delta:int;reason:str=""
 class ReservationIn(BaseModel): customer_name:str;phone:str;date:str;time:str;people:int=2;table_name:str=""
+
+
+class SupplierIn(BaseModel):
+    name:str
+    contact:str=""
+    phone:str=""
+    notes:str=""
+
+class PurchaseItemIn(BaseModel):
+    product_id:int
+    qty:float
+    unit_cost:float
+
+class PurchaseOrderIn(BaseModel):
+    supplier_id:Optional[int]=None
+    expected_date:str=""
+    notes:str=""
+    items:list[PurchaseItemIn]
+
+class PurchaseReceiveIn(BaseModel):
+    received:dict
 
 class FinancialEntryIn(BaseModel):
     entry_type:str="expense"
@@ -257,6 +278,121 @@ def stock_inventory(p:dict,u=Depends(current_user),db:Session=Depends(get_db)):
     audit(db,u,"Inventário concluído",f"{changed} produto(s) ajustado(s)")
     db.commit()
     return {"ok":True,"changed":changed}
+
+
+@app.get("/stock/suppliers")
+def stock_suppliers(u=Depends(current_user),db:Session=Depends(get_db)):
+    return db.query(StockSupplier).filter(StockSupplier.active==True).order_by(StockSupplier.name).all()
+
+@app.post("/stock/suppliers")
+def add_stock_supplier(p:SupplierIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    name=p.name.strip()
+    if not name: raise HTTPException(400,"Informe o nome do fornecedor")
+    x=StockSupplier(name=name,contact=p.contact.strip(),phone=p.phone.strip(),notes=p.notes.strip())
+    db.add(x);audit(db,u,"Fornecedor cadastrado",name);db.commit();db.refresh(x);return x
+
+@app.delete("/stock/suppliers/{sid}")
+def delete_stock_supplier(sid:int,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    x=db.get(StockSupplier,sid)
+    if not x: raise HTTPException(404,"Fornecedor não encontrado")
+    x.active=False
+    audit(db,u,"Fornecedor desativado",x.name);db.commit()
+    return {"ok":True}
+
+@app.get("/stock/purchases")
+def stock_purchases(u=Depends(current_user),db:Session=Depends(get_db)):
+    orders=db.query(PurchaseOrder).order_by(PurchaseOrder.id.desc()).all()
+    out=[]
+    for o in orders:
+        items=db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id==o.id).all()
+        out.append({"id":o.id,"supplier_id":o.supplier_id,"supplier_name":o.supplier_name,"status":o.status,"expected_date":o.expected_date,"notes":o.notes,"total":o.total,"created_at":o.created_at,"received_at":o.received_at,"items":items})
+    return out
+
+@app.post("/stock/purchases")
+def create_stock_purchase(p:PurchaseOrderIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    if not p.items: raise HTTPException(400,"Adicione ao menos um produto")
+    supplier=None
+    if p.supplier_id:
+        supplier=db.get(StockSupplier,p.supplier_id)
+        if not supplier: raise HTTPException(404,"Fornecedor não encontrado")
+    total=0
+    order=PurchaseOrder(
+        supplier_id=supplier.id if supplier else None,
+        supplier_name=supplier.name if supplier else "Sem fornecedor",
+        status="ordered",expected_date=p.expected_date.strip(),notes=p.notes.strip(),total=0
+    )
+    db.add(order);db.flush()
+    for row in p.items:
+        product=db.get(Product,row.product_id)
+        if not product: continue
+        qty=max(0,float(row.qty))
+        unit_cost=max(0,float(row.unit_cost))
+        total+=qty*unit_cost
+        db.add(PurchaseOrderItem(
+            purchase_order_id=order.id,product_id=product.id,product_name=product.name,
+            qty=qty,unit_cost=unit_cost,received_qty=0
+        ))
+    order.total=total
+    audit(db,u,"Pedido de compra criado",f"Pedido #{order.id} - {order.supplier_name} - R$ {total:.2f}")
+    db.commit();db.refresh(order)
+    return order
+
+@app.post("/stock/purchases/{oid}/receive")
+def receive_stock_purchase(oid:int,p:PurchaseReceiveIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    order=db.get(PurchaseOrder,oid)
+    if not order: raise HTTPException(404,"Pedido não encontrado")
+    if order.status=="received": raise HTTPException(409,"Pedido já recebido")
+    items=db.query(PurchaseOrderItem).filter(PurchaseOrderItem.purchase_order_id==oid).all()
+    received_any=False
+    for item in items:
+        qty=float(p.received.get(str(item.id),p.received.get(item.id,0)) or 0)
+        qty=max(0,min(qty,float(item.qty or 0)))
+        if qty<=0: continue
+        product=db.get(Product,item.product_id)
+        if not product: continue
+        product.stock=float(product.stock or 0)+qty
+        if item.unit_cost>0: product.cost=float(item.unit_cost)
+        item.received_qty=qty
+        db.add(StockMovement(
+            product_id=product.id,product_name=product.name,movement_type="purchase",
+            qty=qty,note=f"Recebimento do pedido #{order.id} - {order.supplier_name}"
+        ))
+        received_any=True
+    if not received_any: raise HTTPException(400,"Informe ao menos uma quantidade recebida")
+    order.status="received";order.received_at=datetime.utcnow()
+    audit(db,u,"Pedido de compra recebido",f"Pedido #{order.id} - {order.supplier_name}")
+    db.commit()
+    return {"ok":True}
+
+@app.put("/stock/purchases/{oid}/cancel")
+def cancel_stock_purchase(oid:int,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    order=db.get(PurchaseOrder,oid)
+    if not order: raise HTTPException(404,"Pedido não encontrado")
+    if order.status=="received": raise HTTPException(409,"Pedido já recebido")
+    order.status="cancelled"
+    audit(db,u,"Pedido de compra cancelado",f"Pedido #{order.id}")
+    db.commit()
+    return {"ok":True}
+
+@app.get("/stock/dashboard")
+def stock_dashboard(u=Depends(current_user),db:Session=Depends(get_db)):
+    products=db.query(Product).filter(Product.active==True,Product.track_stock==True).all()
+    value=sum(float(p.stock or 0)*float(p.cost or 0) for p in products)
+    critical=[p for p in products if float(p.stock or 0)<=float(p.min_stock or 0)]
+    zero=[p for p in products if float(p.stock or 0)<=0]
+    excess=[p for p in products if float(p.min_stock or 0)>0 and float(p.stock or 0)>=float(p.min_stock or 0)*4]
+    pending=db.query(PurchaseOrder).filter(PurchaseOrder.status=="ordered").count()
+    latest=db.query(StockMovement).order_by(StockMovement.id.desc()).limit(12).all()
+    return {
+        "tracked":len(products),"value":value,"critical":len(critical),"zero":len(zero),
+        "excess":len(excess),"pending_purchases":pending,
+        "critical_items":critical[:12],"excess_items":excess[:12],"latest_movements":latest
+    }
 
 @app.get("/tables")
 def tables(u=Depends(current_user),db:Session=Depends(get_db)):
