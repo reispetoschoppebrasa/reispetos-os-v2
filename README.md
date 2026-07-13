@@ -1,15 +1,13 @@
-# REI'SPETOS OS v2.1 — Clientes e Fidelidade
+# REI'SPETOS OS v2.2 — Estoque Inteligente
 
 ## Novidades
-- cadastro e edição de clientes;
-- busca por nome ou telefone;
-- acesso rápido ao WhatsApp;
-- pontos de fidelidade;
-- ajustes rápidos de +10, +25, +50 ou remoção de pontos;
-- identificação de clientes VIP;
-- total de visitas e consumo registrado;
-- exclusão de clientes;
-- auditoria das alterações.
+- painel geral de estoque;
+- produtos críticos e zerados;
+- valor total imobilizado;
+- histórico de movimentações;
+- contagem de inventário com ajuste automático;
+- exportação em CSV;
+- alertas visuais de reposição.
 
 ## Arquivos deste patch
 - backend/app/main.py

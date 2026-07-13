@@ -10,7 +10,7 @@ from .database import Base,engine,get_db,SessionLocal
 from .models import *
 from .security import hash_password,verify_password,create_token,current_user
 
-app=FastAPI(title="REI'SPETOS OS API",version="2.1.0")
+app=FastAPI(title="REI'SPETOS OS API",version="2.2.0")
 front=os.getenv("FRONTEND_URL","*")
 app.add_middleware(CORSMiddleware,allow_origins=["*"] if front=="*" else [front],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
@@ -199,6 +199,47 @@ def adjust_product_stock(pid:int,p:ProductStockIn,u=Depends(current_user),db:Ses
     x.stock+=p.qty;db.add(StockMovement(product_id=x.id,product_name=x.name,movement_type=p.movement_type,qty=p.qty,note=p.note));audit(db,u,"Estoque ajustado",f"{x.name}: {p.qty:+g}");db.commit();db.refresh(x);return x
 @app.get("/products/{pid}/movements")
 def product_movements(pid:int,u=Depends(current_user),db:Session=Depends(get_db)): return db.query(StockMovement).filter(StockMovement.product_id==pid).order_by(StockMovement.id.desc()).limit(100).all()
+
+
+@app.get("/stock/summary")
+def stock_summary(u=Depends(current_user),db:Session=Depends(get_db)):
+    products=db.query(Product).filter(Product.active==True,Product.track_stock==True).order_by(Product.name).all()
+    total_value=sum(float(p.stock or 0)*float(p.cost or 0) for p in products)
+    critical=[p for p in products if float(p.stock or 0)<=float(p.min_stock or 0)]
+    zero=[p for p in products if float(p.stock or 0)<=0]
+    return {
+        "tracked":len(products),
+        "critical_count":len(critical),
+        "zero_count":len(zero),
+        "total_value":total_value,
+        "critical":critical,
+        "products":products
+    }
+
+@app.get("/stock/movements")
+def stock_movements(limit:int=200,u=Depends(current_user),db:Session=Depends(get_db)):
+    limit=max(1,min(limit,500))
+    return db.query(StockMovement).order_by(StockMovement.id.desc()).limit(limit).all()
+
+@app.post("/stock/inventory")
+def stock_inventory(p:dict,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    rows=p.get("items",[])
+    note=str(p.get("note","Contagem de inventário")).strip()
+    changed=0
+    for row in rows:
+        pid=int(row.get("product_id",0))
+        counted=float(row.get("counted",0))
+        x=db.get(Product,pid)
+        if not x or not x.active or not x.track_stock: continue
+        delta=counted-float(x.stock or 0)
+        if abs(delta)<0.000001: continue
+        x.stock=counted
+        db.add(StockMovement(product_id=x.id,product_name=x.name,movement_type="inventory",qty=delta,note=note))
+        changed+=1
+    audit(db,u,"Inventário concluído",f"{changed} produto(s) ajustado(s)")
+    db.commit()
+    return {"ok":True,"changed":changed}
 
 @app.get("/tables")
 def tables(u=Depends(current_user),db:Session=Depends(get_db)):
