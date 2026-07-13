@@ -1,28 +1,19 @@
-# REI'SPETOS OS — Repositório limpo v2
+# REI'SPETOS OS v2.1 — Clientes e Fidelidade
 
-Estrutura correta:
+## Novidades
+- cadastro e edição de clientes;
+- busca por nome ou telefone;
+- acesso rápido ao WhatsApp;
+- pontos de fidelidade;
+- ajustes rápidos de +10, +25, +50 ou remoção de pontos;
+- identificação de clientes VIP;
+- total de visitas e consumo registrado;
+- exclusão de clientes;
+- auditoria das alterações.
 
-- `backend/` — FastAPI e banco
-- `frontend/` — React/Vite
-- `docker-compose.yml`
-- `render.yaml`
+## Arquivos deste patch
+- backend/app/main.py
+- frontend/src/main.jsx
+- frontend/src/styles.css
 
-## Publicação
-
-### Vercel
-- Root Directory: `frontend`
-- Framework: Vite
-- Variável:
-  - `VITE_API_URL=https://SEU-BACKEND.onrender.com`
-
-### Render
-- Root Directory: `backend`
-- Build Command: `pip install -r requirements.txt`
-- Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- Variáveis:
-  - `PYTHON_VERSION=3.12.11`
-  - `SECRET_KEY=<chave gerada>`
-  - `FRONTEND_URL=https://SEU-FRONTEND.vercel.app`
-
-## Importante
-Não mova arquivos de `backend/` ou `frontend/` para a raiz.
+Não envie package.json, package-lock.json, Dockerfile ou arquivos fora desses caminhos.

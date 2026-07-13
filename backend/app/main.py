@@ -10,7 +10,7 @@ from .database import Base,engine,get_db,SessionLocal
 from .models import *
 from .security import hash_password,verify_password,create_token,current_user
 
-app=FastAPI(title="REI'SPETOS OS API",version="1.9.0")
+app=FastAPI(title="REI'SPETOS OS API",version="2.1.0")
 front=os.getenv("FRONTEND_URL","*")
 app.add_middleware(CORSMiddleware,allow_origins=["*"] if front=="*" else [front],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
@@ -47,6 +47,8 @@ class CashMoveIn(BaseModel): movement_type:str;amount:float;note:str=""
 class CashCloseIn(BaseModel): counted_amount:float
 
 class CustomerIn(BaseModel): name:str;phone:str
+class CustomerUpdate(BaseModel): name:Optional[str]=None;phone:Optional[str]=None
+class CustomerPointsIn(BaseModel): delta:int;reason:str=""
 class ReservationIn(BaseModel): customer_name:str;phone:str;date:str;time:str;people:int=2;table_name:str=""
 class ExpenseIn(BaseModel): description:str;category:str="Outros";amount:float;status:str="pending"
 
@@ -462,11 +464,48 @@ def cash_close(p:CashCloseIn,u=Depends(current_user),db:Session=Depends(get_db))
     return {"ok":True,"session":s}
 
 @app.get("/customers")
-def customers(u=Depends(current_user),db:Session=Depends(get_db)): return db.query(Customer).order_by(Customer.name).all()
+def customers(u=Depends(current_user),db:Session=Depends(get_db)):
+    return db.query(Customer).order_by(Customer.total_spent.desc(),Customer.name).all()
+
 @app.post("/customers")
 def add_customer(p:CustomerIn,u=Depends(current_user),db:Session=Depends(get_db)):
-    if db.query(Customer).filter_by(phone=p.phone).first(): raise HTTPException(409,"Telefone já cadastrado")
-    c=Customer(name=p.name,phone=p.phone);db.add(c);audit(db,u,"Cliente cadastrado",p.name);db.commit();db.refresh(c);return c
+    name=p.name.strip();phone=p.phone.strip()
+    if not name: raise HTTPException(400,"Informe o nome")
+    if not phone: raise HTTPException(400,"Informe o telefone")
+    if db.query(Customer).filter_by(phone=phone).first(): raise HTTPException(409,"Telefone já cadastrado")
+    c=Customer(name=name,phone=phone)
+    db.add(c);audit(db,u,"Cliente cadastrado",name);db.commit();db.refresh(c);return c
+
+@app.put("/customers/{cid}")
+def update_customer(cid:int,p:CustomerUpdate,u=Depends(current_user),db:Session=Depends(get_db)):
+    c=db.get(Customer,cid)
+    if not c: raise HTTPException(404,"Cliente não encontrado")
+    if p.phone is not None:
+        phone=p.phone.strip()
+        other=db.query(Customer).filter(Customer.phone==phone,Customer.id!=cid).first()
+        if other: raise HTTPException(409,"Telefone já cadastrado")
+        c.phone=phone
+    if p.name is not None:
+        name=p.name.strip()
+        if not name: raise HTTPException(400,"Informe o nome")
+        c.name=name
+    audit(db,u,"Cliente atualizado",c.name);db.commit();db.refresh(c);return c
+
+@app.post("/customers/{cid}/points")
+def customer_points(cid:int,p:CustomerPointsIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    c=db.get(Customer,cid)
+    if not c: raise HTTPException(404,"Cliente não encontrado")
+    c.points=max(0,int(c.points or 0)+int(p.delta))
+    audit(db,u,"Pontos do cliente",f"{c.name}: {p.delta:+d} pontos — {p.reason}")
+    db.commit();db.refresh(c);return c
+
+@app.delete("/customers/{cid}")
+def delete_customer(cid:int,u=Depends(current_user),db:Session=Depends(get_db)):
+    c=db.get(Customer,cid)
+    if not c: raise HTTPException(404,"Cliente não encontrado")
+    name=c.name
+    db.delete(c);audit(db,u,"Cliente excluído",name);db.commit()
+    return {"ok":True}
 @app.get("/reservations")
 def reservations(u=Depends(current_user),db:Session=Depends(get_db)): return db.query(Reservation).order_by(Reservation.id.desc()).all()
 @app.post("/reservations")
