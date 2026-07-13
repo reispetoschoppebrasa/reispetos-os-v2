@@ -10,7 +10,7 @@ from .database import Base,engine,get_db,SessionLocal
 from .models import *
 from .security import hash_password,verify_password,create_token,current_user
 
-app=FastAPI(title="REI'SPETOS OS API",version="2.2.0")
+app=FastAPI(title="REI'SPETOS OS API",version="2.3.0")
 front=os.getenv("FRONTEND_URL","*")
 app.add_middleware(CORSMiddleware,allow_origins=["*"] if front=="*" else [front],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
@@ -50,6 +50,23 @@ class CustomerIn(BaseModel): name:str;phone:str
 class CustomerUpdate(BaseModel): name:Optional[str]=None;phone:Optional[str]=None
 class CustomerPointsIn(BaseModel): delta:int;reason:str=""
 class ReservationIn(BaseModel): customer_name:str;phone:str;date:str;time:str;people:int=2;table_name:str=""
+
+class FinancialEntryIn(BaseModel):
+    entry_type:str="expense"
+    description:str
+    category:str="Outros"
+    supplier:str=""
+    amount:float
+    due_date:str=""
+    payment_method:str=""
+    status:str="pending"
+    recurrence:str="none"
+    notes:str=""
+
+class FinancialStatusIn(BaseModel):
+    status:str
+    payment_method:str=""
+
 class ExpenseIn(BaseModel): description:str;category:str="Outros";amount:float;status:str="pending"
 
 def audit(db,u,a,d=""): db.add(AuditLog(username=u["username"],action=a,detail=d))
@@ -560,6 +577,74 @@ def expenses(u=Depends(current_user),db:Session=Depends(get_db)):
 def add_expense(p:ExpenseIn,u=Depends(current_user),db:Session=Depends(get_db)):
     if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
     e=Expense(**p.model_dump());db.add(e);audit(db,u,"Despesa criada",p.description);db.commit();db.refresh(e);return e
+
+@app.get("/finance/entries")
+def finance_entries(status:Optional[str]=None,entry_type:Optional[str]=None,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    q=db.query(FinancialEntry)
+    if status and status!="all": q=q.filter(FinancialEntry.status==status)
+    if entry_type and entry_type!="all": q=q.filter(FinancialEntry.entry_type==entry_type)
+    return q.order_by(FinancialEntry.due_date,FinancialEntry.id.desc()).all()
+
+@app.get("/finance/summary")
+def finance_summary(u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    rows=db.query(FinancialEntry).all()
+    receivable=sum(float(x.amount or 0) for x in rows if x.entry_type=="income" and x.status=="pending")
+    payable=sum(float(x.amount or 0) for x in rows if x.entry_type=="expense" and x.status=="pending")
+    received=sum(float(x.amount or 0) for x in rows if x.entry_type=="income" and x.status=="paid")
+    paid=sum(float(x.amount or 0) for x in rows if x.entry_type=="expense" and x.status=="paid")
+    today=datetime.utcnow().strftime("%Y-%m-%d")
+    overdue=[x for x in rows if x.status=="pending" and x.due_date and x.due_date<today]
+    categories={}
+    for x in rows:
+        if x.entry_type=="expense" and x.status=="paid":
+            categories[x.category]=categories.get(x.category,0)+float(x.amount or 0)
+    return {
+        "receivable":receivable,"payable":payable,"received":received,"paid":paid,
+        "balance":received-paid,"projected_balance":received+receivable-paid-payable,
+        "overdue_count":len(overdue),"entries_count":len(rows),
+        "categories":[{"name":k,"value":v} for k,v in sorted(categories.items(),key=lambda x:x[1],reverse=True)]
+    }
+
+@app.post("/finance/entries")
+def add_finance_entry(p:FinancialEntryIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    if p.entry_type not in ("income","expense"): raise HTTPException(400,"Tipo inválido")
+    if p.status not in ("pending","paid","cancelled"): raise HTTPException(400,"Status inválido")
+    if p.amount<=0: raise HTTPException(400,"Informe um valor maior que zero")
+    description=p.description.strip()
+    if not description: raise HTTPException(400,"Informe a descrição")
+    x=FinancialEntry(
+        entry_type=p.entry_type,description=description,category=p.category.strip() or "Outros",
+        supplier=p.supplier.strip(),amount=p.amount,due_date=p.due_date.strip(),
+        payment_method=p.payment_method.strip(),status=p.status,recurrence=p.recurrence,
+        notes=p.notes.strip(),paid_at=datetime.utcnow() if p.status=="paid" else None
+    )
+    db.add(x);audit(db,u,"Lançamento financeiro",f"{p.entry_type}: {description} - R$ {p.amount:.2f}")
+    db.commit();db.refresh(x);return x
+
+@app.put("/finance/entries/{fid}/status")
+def update_finance_status(fid:int,p:FinancialStatusIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    x=db.get(FinancialEntry,fid)
+    if not x: raise HTTPException(404,"Lançamento não encontrado")
+    if p.status not in ("pending","paid","cancelled"): raise HTTPException(400,"Status inválido")
+    x.status=p.status
+    if p.payment_method: x.payment_method=p.payment_method.strip()
+    x.paid_at=datetime.utcnow() if p.status=="paid" else None
+    audit(db,u,"Status financeiro alterado",f"{x.description}: {p.status}")
+    db.commit();db.refresh(x);return x
+
+@app.delete("/finance/entries/{fid}")
+def delete_finance_entry(fid:int,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    x=db.get(FinancialEntry,fid)
+    if not x: raise HTTPException(404,"Lançamento não encontrado")
+    description=x.description
+    db.delete(x);audit(db,u,"Lançamento financeiro excluído",description);db.commit()
+    return {"ok":True}
+
 @app.get("/audit")
 def logs(u=Depends(current_user),db:Session=Depends(get_db)):
     if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")

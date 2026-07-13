@@ -100,3 +100,19 @@ class PrintJob(Base):
     status=Column(String(20),default="pending")
     created_at=Column(DateTime(timezone=True),server_default=func.now())
     printed_at=Column(DateTime(timezone=True),nullable=True)
+
+class FinancialEntry(Base):
+    __tablename__="financial_entries"
+    id=Column(Integer,primary_key=True)
+    entry_type=Column(String(20),default="expense")
+    description=Column(String(180),nullable=False)
+    category=Column(String(80),default="Outros")
+    supplier=Column(String(120),default="")
+    amount=Column(Float,default=0)
+    due_date=Column(String(20),default="")
+    payment_method=Column(String(40),default="")
+    status=Column(String(30),default="pending")
+    recurrence=Column(String(30),default="none")
+    notes=Column(Text,default="")
+    created_at=Column(DateTime(timezone=True),server_default=func.now())
+    paid_at=Column(DateTime(timezone=True),nullable=True)
