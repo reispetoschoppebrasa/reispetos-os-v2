@@ -1,19 +1,18 @@
-# REI'SPETOS OS v2.4 — Estoque Completo Pro
+# REI'SPETOS OS v2.5 — Mesas e Comandas Pro
 
-## Recursos
-- painel avançado de estoque;
-- alertas de estoque crítico, zerado e excesso;
-- fornecedores;
-- pedidos de compra;
-- recebimento de mercadoria;
-- atualização automática de estoque e custo;
-- histórico completo de movimentações;
-- inventário físico;
-- exportação CSV;
-- valor total em estoque.
+## Novidades
+- transferência de item entre comandas;
+- transferência de uma comanda completa para outra mesa;
+- taxa de serviço configurável;
+- desconto em reais;
+- pagamento misto;
+- registro separado das formas de pagamento;
+- auditoria das transferências e fechamentos.
 
-## Arquivos
+## Arquivos do patch
 - backend/app/models.py
 - backend/app/main.py
 - frontend/src/main.jsx
 - frontend/src/styles.css
+
+Envie somente estes arquivos, mantendo exatamente os caminhos.

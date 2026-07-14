@@ -10,7 +10,7 @@ from .database import Base,engine,get_db,SessionLocal
 from .models import *
 from .security import hash_password,verify_password,create_token,current_user
 
-app=FastAPI(title="REI'SPETOS OS API",version="2.4.0")
+app=FastAPI(title="REI'SPETOS OS API",version="2.5.0")
 front=os.getenv("FRONTEND_URL","*")
 app.add_middleware(CORSMiddleware,allow_origins=["*"] if front=="*" else [front],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
@@ -40,6 +40,22 @@ class ComandaIn(BaseModel): name:str="";customer_name:str=""
 class ItemIn(BaseModel): product_id:int;qty:float;note:str=""
 class ItemUpdate(BaseModel): qty:Optional[float]=None;note:Optional[str]=None
 class CloseIn(BaseModel): payment_method:str
+
+class PaymentPartIn(BaseModel):
+    payment_method:str
+    amount:float
+
+class AdvancedCloseIn(BaseModel):
+    service_percent:float=0
+    discount:float=0
+    payments:list[PaymentPartIn]=[]
+
+class ItemTransferIn(BaseModel):
+    target_comanda_id:int
+
+class ComandaTransferIn(BaseModel):
+    target_table_name:str
+
 class StockIn(BaseModel): product_id:int;movement_type:str;qty:float;note:str=""
 
 class CashOpenIn(BaseModel): opening_amount:float=0
@@ -497,6 +513,79 @@ def close_comanda(cid:int,p:CloseIn,u=Depends(current_user),db:Session=Depends(g
     if db.query(Comanda).filter(Comanda.table_id==t.id,Comanda.status=="open",Comanda.id!=c.id).count()==0: t.status="closed"
     audit(db,u,"Comanda fechada",f"{t.name} / {c.customer_name} - {total:.2f} - {p.payment_method}");db.commit();return {"ok":True,"total":total}
 
+
+
+@app.post("/items/{iid}/transfer")
+def transfer_item(iid:int,p:ItemTransferIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    item=db.get(OrderItem,iid)
+    target=db.get(Comanda,p.target_comanda_id)
+    if not item or item.paid: raise HTTPException(404,"Item não encontrado")
+    if not target or target.status!="open": raise HTTPException(404,"Comanda de destino não encontrada")
+    source=db.get(Comanda,item.comanda_id) if item.comanda_id else None
+    old_table=db.get(TableOrder,item.table_id)
+    new_table=db.get(TableOrder,target.table_id)
+    item.comanda_id=target.id
+    item.table_id=target.table_id
+    audit(db,u,"Item transferido",f"{item.qty}x {item.product_name}: {old_table.name if old_table else '-'} / {source.customer_name if source else '-'} → {new_table.name if new_table else '-'} / {target.customer_name}")
+    db.commit()
+    return {"ok":True}
+
+@app.post("/comandas/{cid}/transfer")
+def transfer_comanda(cid:int,p:ComandaTransferIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    c=db.get(Comanda,cid)
+    if not c or c.status!="open": raise HTTPException(404,"Comanda não encontrada")
+    target_name=p.target_table_name.strip()
+    physical=[f"Mesa {i:02d}" for i in range(1,21)]+[f"Bistrô {i:02d}" for i in range(1,5)]
+    if target_name not in physical: raise HTTPException(400,"Mesa de destino inválida")
+    source_table=db.get(TableOrder,c.table_id)
+    target=db.query(TableOrder).filter(TableOrder.name==target_name,TableOrder.status=="open").first()
+    if not target:
+        target=TableOrder(name=target_name,customer_name=c.customer_name,status="open")
+        db.add(target);db.flush()
+    if source_table and source_table.id==target.id: raise HTTPException(400,"Escolha outra mesa")
+    old_name=source_table.name if source_table else "-"
+    c.table_id=target.id
+    db.query(OrderItem).filter(OrderItem.comanda_id==c.id,OrderItem.paid==False).update({OrderItem.table_id:target.id})
+    if source_table and db.query(Comanda).filter(Comanda.table_id==source_table.id,Comanda.status=="open",Comanda.id!=c.id).count()==0:
+        source_table.status="closed"
+    audit(db,u,"Comanda transferida",f"{c.customer_name}: {old_name} → {target.name}")
+    db.commit()
+    return {"ok":True}
+
+@app.post("/comandas/{cid}/close-advanced")
+def close_comanda_advanced(cid:int,p:AdvancedCloseIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    c=db.get(Comanda,cid)
+    if not c or c.status!="open": raise HTTPException(404,"Comanda não encontrada")
+    t=db.get(TableOrder,c.table_id)
+    items=db.query(OrderItem).filter(OrderItem.comanda_id==cid,OrderItem.paid==False).all()
+    if not items: raise HTTPException(400,"Comanda sem itens")
+    subtotal=sum(float(i.qty)*float(i.unit_price) for i in items)
+    cost=sum(float(i.qty)*float(i.unit_cost) for i in items)
+    service=max(0,subtotal*max(0,p.service_percent)/100)
+    discount=max(0,min(float(p.discount or 0),subtotal+service))
+    total=max(0,subtotal+service-discount)
+    payments=[x for x in p.payments if float(x.amount)>0]
+    paid_total=sum(float(x.amount) for x in payments)
+    if not payments: raise HTTPException(400,"Informe ao menos uma forma de pagamento")
+    if abs(paid_total-total)>0.02: raise HTTPException(400,f"Pagamentos somam R$ {paid_total:.2f}, mas o total é R$ {total:.2f}")
+    method="Misto" if len(payments)>1 else payments[0].payment_method
+    sale=Sale(origin="comanda",reference=f"{t.name} / {c.customer_name}",total=total,cost_total=cost,payment_method=method)
+    db.add(sale);db.flush()
+    for pay in payments:
+        db.add(SalePayment(sale_id=sale.id,payment_method=pay.payment_method,amount=float(pay.amount)))
+    for i in items:
+        i.paid=True
+        if i.status!="delivered": i.status="delivered"
+    c.status="closed";c.closed_at=datetime.utcnow()
+    if db.query(Comanda).filter(Comanda.table_id==t.id,Comanda.status=="open",Comanda.id!=c.id).count()==0:
+        t.status="closed"
+    audit(db,u,"Comanda fechada Pro",f"{t.name} / {c.customer_name} | Subtotal R$ {subtotal:.2f} | Serviço R$ {service:.2f} | Desconto R$ {discount:.2f} | Total R$ {total:.2f}")
+    db.commit()
+    return {"ok":True,"subtotal":subtotal,"service":service,"discount":discount,"total":total}
+
+@app.get("/sales/{sid}/payments")
+def sale_payments(sid:int,u=Depends(current_user),db:Session=Depends(get_db)):
+    return db.query(SalePayment).filter(SalePayment.sale_id==sid).order_by(SalePayment.id).all()
 
 @app.post("/tables/{tid}/transfer")
 def transfer_table(tid:int,p:dict,u=Depends(current_user),db:Session=Depends(get_db)):

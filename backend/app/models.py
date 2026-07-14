@@ -149,3 +149,12 @@ class PurchaseOrderItem(Base):
     qty=Column(Float,default=0)
     unit_cost=Column(Float,default=0)
     received_qty=Column(Float,default=0)
+
+
+class SalePayment(Base):
+    __tablename__="sale_payments"
+    id=Column(Integer,primary_key=True)
+    sale_id=Column(Integer,ForeignKey("sales.id"),nullable=False)
+    payment_method=Column(String(40),nullable=False)
+    amount=Column(Float,default=0)
+    created_at=Column(DateTime(timezone=True),server_default=func.now())
