@@ -10,7 +10,7 @@ from .database import Base,engine,get_db,SessionLocal
 from .models import *
 from .security import hash_password,verify_password,create_token,current_user
 
-app=FastAPI(title="REI'SPETOS OS API",version="2.5.0")
+app=FastAPI(title="REI'SPETOS OS API",version="2.6.0")
 front=os.getenv("FRONTEND_URL","*")
 app.add_middleware(CORSMiddleware,allow_origins=["*"] if front=="*" else [front],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
@@ -61,6 +61,11 @@ class StockIn(BaseModel): product_id:int;movement_type:str;qty:float;note:str=""
 class CashOpenIn(BaseModel): opening_amount:float=0
 class CashMoveIn(BaseModel): movement_type:str;amount:float;note:str=""
 class CashCloseIn(BaseModel): counted_amount:float
+
+class CashCloseProIn(BaseModel):
+    counts:dict[str,float]
+    note:str=""
+
 
 class CustomerIn(BaseModel): name:str;phone:str
 class CustomerUpdate(BaseModel): name:Optional[str]=None;phone:Optional[str]=None
@@ -691,21 +696,33 @@ def prod_status(iid:int,status:str,u=Depends(current_user),db:Session=Depends(ge
     i.status=status;audit(db,u,"Status de produção",f"{i.product_name} - {status}");db.commit();return {"ok":True}
 
 def _cash_payload(db:Session,s):
+    methods=["Dinheiro","Pix","Débito","Crédito","Vale","Misto"]
     if not s:
-        return {"open":False,"session":None,"movements":[],"sales_total":0,"expected_amount":0}
-    sales_total=float(db.query(func.coalesce(func.sum(Sale.total),0)).filter(Sale.created_at>=s.opened_at).scalar() or 0)
+        return {"open":False,"session":None,"movements":[],"sales_total":0,"expected_amount":0,"payment_totals":{m:0 for m in methods},"cash_expected":0}
+    sales=db.query(Sale).filter(Sale.created_at>=s.opened_at).order_by(Sale.id.desc()).all()
+    sales_total=sum(float(x.total or 0) for x in sales)
+    payment_totals={m:0 for m in methods}
+    for sale in sales:
+        parts=db.query(SalePayment).filter(SalePayment.sale_id==sale.id).all()
+        if parts:
+            for part in parts:
+                method=part.payment_method or "Outros"
+                payment_totals[method]=payment_totals.get(method,0)+float(part.amount or 0)
+        else:
+            method=sale.payment_method or "Outros"
+            payment_totals[method]=payment_totals.get(method,0)+float(sale.total or 0)
     moves=db.query(CashMovement).filter(CashMovement.session_id==s.id).order_by(CashMovement.id.desc()).all()
     supplies=sum(float(x.amount or 0) for x in moves if x.movement_type=="supply")
     withdrawals=sum(float(x.amount or 0) for x in moves if x.movement_type in ("withdrawal","expense"))
-    expected=float(s.opening_amount or 0)+sales_total+supplies-withdrawals
+    cash_sales=float(payment_totals.get("Dinheiro",0))
+    cash_expected=float(s.opening_amount or 0)+cash_sales+supplies-withdrawals
     return {
-        "open":s.status=="open",
-        "session":s,
-        "movements":moves,
-        "sales_total":sales_total,
-        "supplies":supplies,
-        "withdrawals":withdrawals,
-        "expected_amount":expected
+        "open":s.status=="open","session":s,"movements":moves,"sales":sales[:100],
+        "sales_total":sales_total,"supplies":supplies,"withdrawals":withdrawals,
+        "expected_amount":cash_expected,"cash_expected":cash_expected,
+        "payment_totals":payment_totals,
+        "sales_count":len(sales),
+        "ticket_average":sales_total/len(sales) if sales else 0
     }
 
 @app.get("/cash/status")
@@ -745,6 +762,64 @@ def cash_close(p:CashCloseIn,u=Depends(current_user),db:Session=Depends(get_db))
     audit(db,u,"Caixa fechado",f"Esperado: R$ {s.expected_amount:.2f} | Contado: R$ {s.counted_amount:.2f} | Diferença: R$ {s.difference:.2f}")
     db.commit();db.refresh(s)
     return {"ok":True,"session":s}
+
+
+@app.post("/cash/close-pro")
+def cash_close_pro(p:CashCloseProIn,u=Depends(current_user),db:Session=Depends(get_db)):
+    s=db.query(CashSession).filter(CashSession.status=="open").order_by(CashSession.id.desc()).first()
+    if not s: raise HTTPException(409,"Não existe caixa aberto")
+    payload=_cash_payload(db,s)
+    expected=dict(payload.get("payment_totals",{}))
+    expected["Dinheiro"]=float(payload.get("cash_expected",0))
+    methods=set(expected.keys())|set(p.counts.keys())
+    total_counted=0
+    total_expected=0
+    db.query(CashClosingCount).filter(CashClosingCount.session_id==s.id).delete()
+    for method in methods:
+        exp=float(expected.get(method,0) or 0)
+        counted=float(p.counts.get(method,0) or 0)
+        total_expected+=exp;total_counted+=counted
+        db.add(CashClosingCount(session_id=s.id,payment_method=method,expected_amount=exp,counted_amount=counted,difference=counted-exp))
+    s.counted_amount=total_counted
+    s.expected_amount=total_expected
+    s.difference=total_counted-total_expected
+    s.status="closed";s.closed_at=datetime.utcnow()
+    audit(db,u,"Caixa fechado Pro",f"Esperado R$ {total_expected:.2f} | Conferido R$ {total_counted:.2f} | Diferença R$ {s.difference:.2f} | {p.note}")
+    db.commit();db.refresh(s)
+    return {"ok":True,"session":s}
+
+@app.get("/cash/history")
+def cash_history(limit:int=30,u=Depends(current_user),db:Session=Depends(get_db)):
+    if u["role"]!="admin": raise HTTPException(403,"Apenas administrador")
+    rows=db.query(CashSession).order_by(CashSession.id.desc()).limit(max(1,min(limit,100))).all()
+    out=[]
+    for s in rows:
+        counts=db.query(CashClosingCount).filter(CashClosingCount.session_id==s.id).all()
+        moves=db.query(CashMovement).filter(CashMovement.session_id==s.id).all()
+        sales=db.query(Sale).filter(Sale.created_at>=s.opened_at)
+        if s.closed_at: sales=sales.filter(Sale.created_at<=s.closed_at)
+        sales_rows=sales.all()
+        out.append({
+            "id":s.id,"opened_by":s.opened_by,"opening_amount":s.opening_amount,"status":s.status,
+            "opened_at":s.opened_at,"closed_at":s.closed_at,"expected_amount":s.expected_amount,
+            "counted_amount":s.counted_amount,"difference":s.difference,
+            "sales_total":sum(float(x.total or 0) for x in sales_rows),"sales_count":len(sales_rows),
+            "supplies":sum(float(x.amount or 0) for x in moves if x.movement_type=="supply"),
+            "withdrawals":sum(float(x.amount or 0) for x in moves if x.movement_type in ("withdrawal","expense")),
+            "counts":counts
+        })
+    return out
+
+@app.get("/cash/session/{sid}")
+def cash_session_detail(sid:int,u=Depends(current_user),db:Session=Depends(get_db)):
+    s=db.get(CashSession,sid)
+    if not s: raise HTTPException(404,"Caixa não encontrado")
+    counts=db.query(CashClosingCount).filter(CashClosingCount.session_id==sid).all()
+    moves=db.query(CashMovement).filter(CashMovement.session_id==sid).order_by(CashMovement.id.desc()).all()
+    sales_q=db.query(Sale).filter(Sale.created_at>=s.opened_at)
+    if s.closed_at: sales_q=sales_q.filter(Sale.created_at<=s.closed_at)
+    sales=sales_q.order_by(Sale.id.desc()).all()
+    return {"session":s,"counts":counts,"movements":moves,"sales":sales}
 
 @app.get("/customers")
 def customers(u=Depends(current_user),db:Session=Depends(get_db)):

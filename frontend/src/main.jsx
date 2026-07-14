@@ -186,43 +186,43 @@ function Production({items,printJobs,request}){
  </div>
 }
 function Cash({data,request}){
- const[opening,setOpening]=useState(0),[move,setMove]=useState({movement_type:"supply",amount:0,note:""}),[counted,setCounted]=useState(0);
+ const[opening,setOpening]=useState(0),[move,setMove]=useState({movement_type:"supply",amount:0,note:""}),[tab,setTab]=useState("today"),[history,setHistory]=useState([]),[counts,setCounts]=useState({}),[closeNote,setCloseNote]=useState(""),[detail,setDetail]=useState(null);
  const labels={supply:"Suprimento",withdrawal:"Sangria",expense:"Despesa"};
+ const methods=["Dinheiro","Pix","Débito","Crédito","Vale"];
+ useEffect(()=>{if(tab==="history")request("/cash/history?limit=50",{method:"GET"}).then(setHistory)},[tab]);
+ useEffect(()=>{if(data.open){const c={};methods.forEach(m=>c[m]=m==="Dinheiro"?Number(data.cash_expected||0):Number(data.payment_totals?.[m]||0));setCounts(c)}},[data.open,data.session?.id]);
  const openCash=async()=>{await request("/cash/open",{method:"POST",body:JSON.stringify({opening_amount:+opening})});setOpening(0)};
  const addMove=async()=>{await request("/cash/movement",{method:"POST",body:JSON.stringify({...move,amount:+move.amount})});setMove({movement_type:"supply",amount:0,note:""})};
- const closeCash=async()=>{if(confirm(`Fechar o caixa com ${money(counted)} contado?`)){await request("/cash/close",{method:"POST",body:JSON.stringify({counted_amount:+counted})});setCounted(0)}};
- if(!data.open)return <><div className="cashHero closed"><div><span>Status do caixa</span><h2>Caixa fechado</h2><p>Informe o fundo inicial para começar o expediente.</p></div><div className="cashOpenForm"><label>Fundo inicial<input type="number" step="0.01" value={opening} onChange={e=>setOpening(e.target.value)}/></label><button onClick={openCash}>Abrir caixa</button></div></div></>;
- return <div className="cashPage">
-  <div className="cards cashCards">
-   <div className="card"><span>Fundo inicial</span><b>{money(data.session?.opening_amount)}</b></div>
-   <div className="card"><span>Vendas desde a abertura</span><b>{money(data.sales_total)}</b></div>
-   <div className="card"><span>Suprimentos</span><b>{money(data.supplies)}</b></div>
-   <div className="card"><span>Saídas</span><b>{money(data.withdrawals)}</b></div>
-   <div className="card highlight"><span>Saldo esperado</span><b>{money(data.expected_amount)}</b></div>
-  </div>
-  <div className="grid2 cashGrid">
-   <section className="panel">
-    <div className="sectionHead"><div><h3>Movimentar caixa</h3><p>Registre toda entrada ou saída fora das vendas.</p></div></div>
-    <div className="formGrid">
-     <label>Tipo<select value={move.movement_type} onChange={e=>setMove({...move,movement_type:e.target.value})}><option value="supply">Suprimento</option><option value="withdrawal">Sangria</option><option value="expense">Despesa paga</option></select></label>
-     <label>Valor<input type="number" step="0.01" value={move.amount} onChange={e=>setMove({...move,amount:e.target.value})}/></label>
-     <label className="full">Motivo / observação<input value={move.note} onChange={e=>setMove({...move,note:e.target.value})} placeholder="Ex.: troco adicional, retirada para cofre..."/></label>
-    </div>
-    <button onClick={addMove}>Registrar movimentação</button>
-   </section>
-   <section className="panel cashClose">
-    <h3>Fechamento do caixa</h3><p>Conte o dinheiro e informe o total real disponível no caixa.</p>
-    <label>Valor contado<input type="number" step="0.01" value={counted} onChange={e=>setCounted(e.target.value)}/></label>
-    <div className="expectedLine"><span>Esperado pelo sistema</span><b>{money(data.expected_amount)}</b></div>
-    <button className="danger" onClick={closeCash}>Fechar caixa</button>
-   </section>
-  </div>
-  <section className="panel"><div className="sectionHead"><h3>Movimentações do expediente</h3><span>{(data.movements||[]).length} registro(s)</span></div>
-   <div className="cashMovements">{(data.movements||[]).length===0?<div className="emptyState">Nenhuma movimentação manual.</div>:(data.movements||[]).map(x=><div className={`cashMovement ${x.movement_type}`} key={x.id}><div><b>{labels[x.movement_type]||x.movement_type}</b><small>{x.note||"Sem observação"} • {x.username}</small></div><strong>{x.movement_type==="supply"?"+":"-"} {money(x.amount)}</strong></div>)}</div>
-  </section>
+ const closeCash=async()=>{const expected=methods.reduce((a,m)=>a+(m==="Dinheiro"?Number(data.cash_expected||0):Number(data.payment_totals?.[m]||0)),0),counted=methods.reduce((a,m)=>a+Number(counts[m]||0),0);if(confirm(`Fechar caixa?\nEsperado: ${money(expected)}\nConferido: ${money(counted)}\nDiferença: ${money(counted-expected)}`)){await request("/cash/close-pro",{method:"POST",body:JSON.stringify({counts, note:closeNote})});setCloseNote("");setTab("history")}};
+ const openDetail=async id=>setDetail(await request(`/cash/session/${id}`,{method:"GET"}));
+ const paymentTotals=data.payment_totals||{};
+ const expectedTotal=methods.reduce((a,m)=>a+(m==="Dinheiro"?Number(data.cash_expected||0):Number(paymentTotals[m]||0)),0);
+ const countedTotal=methods.reduce((a,m)=>a+Number(counts[m]||0),0);
+ if(!data.open)return <div className="cashProPage">
+  <div className="cashHero closed"><div><span>Controle de caixa</span><h2>Caixa fechado</h2><p>Abra o expediente informando o fundo inicial para troco.</p></div><div className="cashOpenForm"><label>Fundo inicial<input type="number" step="0.01" value={opening} onChange={e=>setOpening(e.target.value)}/></label><button onClick={openCash}>Abrir caixa</button></div></div>
+  <div className="cashTabs"><button className={tab==="history"?"active":""} onClick={()=>setTab("history")}>Histórico de caixas</button></div>
+  {tab==="history"&&<CashHistory rows={history} openDetail={openDetail}/>}
+  {detail&&<CashDetail data={detail} close={()=>setDetail(null)}/>}
+ </div>;
+ return <div className="cashProPage">
+  <div className="cashTop"><div><span>Expediente aberto</span><h2>Caixa #{data.session?.id}</h2><p>Aberto por {data.session?.opened_by}</p></div><div className="cashClock"><span>Vendas</span><b>{data.sales_count||0}</b><small>Ticket médio {money(data.ticket_average)}</small></div></div>
+  <div className="cashTabs"><button className={tab==="today"?"active":""} onClick={()=>setTab("today")}>Resumo</button><button className={tab==="moves"?"active":""} onClick={()=>setTab("moves")}>Movimentações</button><button className={tab==="close"?"active":""} onClick={()=>setTab("close")}>Conferência e fechamento</button><button className={tab==="history"?"active":""} onClick={()=>setTab("history")}>Histórico</button></div>
+  {tab==="today"&&<><div className="cards cashProCards"><div className="card"><span>Fundo inicial</span><b>{money(data.session?.opening_amount)}</b></div><div className="card"><span>Vendas</span><b>{money(data.sales_total)}</b></div><div className="card"><span>Suprimentos</span><b className="greenText">{money(data.supplies)}</b></div><div className="card"><span>Sangrias e despesas</span><b className="redText">{money(data.withdrawals)}</b></div><div className="card highlight"><span>Dinheiro esperado</span><b>{money(data.cash_expected)}</b></div></div>
+   <section className="panel"><div className="sectionHead"><div><h3>Vendas por forma de pagamento</h3><p>Valores recebidos desde a abertura do caixa.</p></div></div><div className="paymentCards">{methods.map(m=><div key={m}><span>{m}</span><b>{money(paymentTotals[m]||0)}</b></div>)}</div></section>
+   <section className="panel"><div className="sectionHead"><div><h3>Últimas vendas</h3><p>Vendas registradas no expediente.</p></div><span>{(data.sales||[]).length} registro(s)</span></div><div className="saleList">{(data.sales||[]).length===0?<div className="emptyState">Nenhuma venda registrada.</div>:(data.sales||[]).slice(0,20).map(s=><div className="saleRow" key={s.id}><div><b>{s.reference||s.origin}</b><small>{s.payment_method} • Venda #{s.id}</small></div><strong>{money(s.total)}</strong></div>)}</div></section></>}
+  {tab==="moves"&&<div className="grid2 cashGrid"><section className="panel"><div className="sectionHead"><div><h3>Nova movimentação</h3><p>Registre suprimentos, sangrias e despesas pagas.</p></div></div><div className="formGrid"><label>Tipo<select value={move.movement_type} onChange={e=>setMove({...move,movement_type:e.target.value})}><option value="supply">Suprimento</option><option value="withdrawal">Sangria</option><option value="expense">Despesa paga</option></select></label><label>Valor<input type="number" step="0.01" value={move.amount} onChange={e=>setMove({...move,amount:e.target.value})}/></label><label className="full">Motivo<input value={move.note} onChange={e=>setMove({...move,note:e.target.value})} placeholder="Ex.: retirada para o cofre"/></label></div><button onClick={addMove}>Registrar movimentação</button></section><section className="panel"><div className="sectionHead"><h3>Movimentações do expediente</h3><span>{(data.movements||[]).length}</span></div><div className="cashMovements">{(data.movements||[]).length===0?<div className="emptyState">Nenhuma movimentação.</div>:(data.movements||[]).map(x=><div className={`cashMovement ${x.movement_type}`} key={x.id}><div><b>{labels[x.movement_type]||x.movement_type}</b><small>{x.note||"Sem observação"} • {x.username}</small></div><strong>{x.movement_type==="supply"?"+":"−"} {money(x.amount)}</strong></div>)}</div></section></div>}
+  {tab==="close"&&<section className="panel closePro"><div className="sectionHead"><div><h3>Conferência do caixa</h3><p>Informe quanto foi conferido em cada forma de pagamento.</p></div></div><div className="countTable"><div className="countHead"><span>Forma</span><span>Esperado</span><span>Conferido</span><span>Diferença</span></div>{methods.map(m=>{const exp=m==="Dinheiro"?Number(data.cash_expected||0):Number(paymentTotals[m]||0),cnt=Number(counts[m]||0),diff=cnt-exp;return <div className="countRow" key={m}><b>{m}</b><span>{money(exp)}</span><input type="number" step="0.01" value={counts[m]??0} onChange={e=>setCounts({...counts,[m]:e.target.value})}/><strong className={diff===0?"":diff>0?"greenText":"redText"}>{money(diff)}</strong></div>})}</div><div className="closeTotals"><div><span>Total esperado</span><b>{money(expectedTotal)}</b></div><div><span>Total conferido</span><b>{money(countedTotal)}</b></div><div><span>Diferença geral</span><strong className={countedTotal-expectedTotal===0?"":countedTotal>expectedTotal?"greenText":"redText"}>{money(countedTotal-expectedTotal)}</strong></div></div><textarea value={closeNote} onChange={e=>setCloseNote(e.target.value)} placeholder="Observação do fechamento (opcional)"/><button className="danger closeCashButton" onClick={closeCash}>Confirmar e fechar caixa</button></section>}
+  {tab==="history"&&<CashHistory rows={history} openDetail={openDetail}/>}
+  {detail&&<CashDetail data={detail} close={()=>setDetail(null)}/>}
  </div>
 }
-
+function CashHistory({rows,openDetail}){
+ return <section className="panel"><div className="sectionHead"><div><h3>Histórico de caixas</h3><p>Conferências e diferenças dos últimos expedientes.</p></div><span>{rows.length} caixa(s)</span></div><div className="cashHistoryList">{rows.length===0?<div className="emptyState">Nenhum caixa fechado.</div>:rows.map(x=><button className="cashHistoryRow" key={x.id} onClick={()=>openDetail(x.id)}><div><b>Caixa #{x.id}</b><small>{x.opened_by} • {x.status==="open"?"Aberto":"Fechado"}</small></div><span>{x.sales_count} venda(s)<small>{money(x.sales_total)}</small></span><span>Esperado<small>{money(x.expected_amount)}</small></span><span>Diferença<strong className={Number(x.difference||0)===0?"":Number(x.difference)>0?"greenText":"redText"}>{money(x.difference)}</strong></span></button>)}</div></section>
+}
+function CashDetail({data,close}){
+ const s=data.session||{};
+ return <div className="modalBack"><div className="innerModal cashDetailModal"><div className="sectionHead"><div><h3>Caixa #{s.id}</h3><p>Operador: {s.opened_by}</p></div><button className="iconBtn" onClick={close}>×</button></div><div className="cards detailCards"><div className="card"><span>Esperado</span><b>{money(s.expected_amount)}</b></div><div className="card"><span>Conferido</span><b>{money(s.counted_amount)}</b></div><div className="card"><span>Diferença</span><b>{money(s.difference)}</b></div></div><h4>Conferência por forma</h4><div className="countTable">{(data.counts||[]).map(x=><div className="countRow" key={x.id}><b>{x.payment_method}</b><span>{money(x.expected_amount)}</span><span>{money(x.counted_amount)}</span><strong>{money(x.difference)}</strong></div>)}</div><h4>Movimentações</h4><div className="cashMovements">{(data.movements||[]).map(x=><div className={`cashMovement ${x.movement_type}`} key={x.id}><div><b>{x.movement_type}</b><small>{x.note}</small></div><strong>{money(x.amount)}</strong></div>)}</div></div></div>
+}
 
 function Reports({request}){
  const[days,setDays]=useState(30),[report,setReport]=useState(null),[loading,setLoading]=useState(false);

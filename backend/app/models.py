@@ -158,3 +158,14 @@ class SalePayment(Base):
     payment_method=Column(String(40),nullable=False)
     amount=Column(Float,default=0)
     created_at=Column(DateTime(timezone=True),server_default=func.now())
+
+
+class CashClosingCount(Base):
+    __tablename__="cash_closing_counts"
+    id=Column(Integer,primary_key=True)
+    session_id=Column(Integer,ForeignKey("cash_sessions.id"),nullable=False)
+    payment_method=Column(String(40),nullable=False)
+    expected_amount=Column(Float,default=0)
+    counted_amount=Column(Float,default=0)
+    difference=Column(Float,default=0)
+    created_at=Column(DateTime(timezone=True),server_default=func.now())
